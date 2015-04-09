@@ -126,9 +126,8 @@ func startCmd(c *vyrest.Client, args ...string) {
 func runCmd(c *vyrest.Client, args ...string) {
 	cmd, err := c.StartOperationalCmd(args)
 	handleError(err)
-	out, err := cmd.Output()
+	err = cmd.StreamOutput(os.Stdout)
 	handleError(err)
-	fmt.Print(out)
 }
 
 func getOutput(c *vyrest.Client, args ...string) {

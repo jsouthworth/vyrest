@@ -80,13 +80,12 @@ type Command struct {
 	client *Client
 }
 
-func (c *Command) Output() (string, error) {
-	buf := new(bytes.Buffer)
+func (c *Command) getOutput(w io.Writer) error {
 	res, err := c.client.doRequest("GET", "/rest/op/"+c.pid)
 	if err != nil {
-		return "", err
+		return err
 	}
-	io.Copy(buf, res.Body)
+	io.Copy(w, res.Body)
 	res.Body.Close()
 	for res.StatusCode != 410 {
 		res, err = c.client.doRequest("GET", "/rest/op/"+c.pid)
@@ -94,17 +93,30 @@ func (c *Command) Output() (string, error) {
 			if res != nil && res.StatusCode == 410 {
 				break
 			}
-			return "", err
+			return err
 		}
 		if res.StatusCode == 410 {
 			res.Body.Close()
 			break
 		}
-		if _, err := io.Copy(buf, res.Body); err != nil {
+		if _, err := io.Copy(w, res.Body); err != nil {
 			res.Body.Close()
 			break
 		}
 		res.Body.Close()
+	}
+	return nil
+}
+
+func (c *Command) StreamOutput(w io.Writer) error {
+	return c.getOutput(w)
+}
+
+func (c *Command) Output() (string, error) {
+	buf := new(bytes.Buffer)
+	err := c.getOutput(buf)
+	if err != nil {
+		return "", err
 	}
 	return buf.String(), nil
 }
