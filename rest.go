@@ -32,6 +32,7 @@ type GetSessionResp struct {
 }
 
 type Session struct {
+	client      *Client
 	Id          string `json:"id"`
 	Username    string `json:"username"`
 	Started     string `json:"started"`
@@ -40,24 +41,87 @@ type Session struct {
 	Description string `json:"description"`
 }
 
+func (s *Session) getPath(path string) string {
+	return "/rest/conf/" + s.Id + path
+}
+
+func (s *Session) Set(path []string) error {
+	_, err := s.client.doRequest("PUT", s.getPath("/set"+pathToString(path)))
+	return err
+}
+
+func (s *Session) Delete(path []string) error {
+	_, err := s.client.doRequest("PUT", s.getPath("/delete"+pathToString(path)))
+	return err
+}
+
+func (s *Session) Get(path []string) (*ConfResp, error) {
+	var resp *ConfResp
+	res, err := s.client.doRequest("GET", s.getPath(pathToString(path)))
+	if err != nil {
+		return nil, err
+	}
+	err = s.client.decodeInto(res, &resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (s *Session) Commit() error {
+	_, err := s.client.doMsgRequest("POST", s.getPath("/commit"))
+	return err
+}
+
+func (s *Session) Save() error {
+	_, err := s.client.doMsgRequest("POST", s.getPath("/save"))
+	return err
+}
+
+func (s *Session) Load() error {
+	_, err := s.client.doMsgRequest("POST", s.getPath("/load"))
+	return err
+}
+
+func (s *Session) Discard() error {
+	_, err := s.client.doMsgRequest("POST", s.getPath("/discard"))
+	return err
+}
+
+func (s *Session) Show() (string, error) {
+	return s.client.doMsgRequest("POST", s.getPath("/show"))
+}
+
+func (s *Session) Teardown() error {
+	//TODO, this should use MessageErrorResp
+	_, err := s.client.doRequest("DELETE", s.getPath(""))
+	return err
+}
+
 type Child struct {
 	Name  string `json:"name"`
 	State string `json:"state"`
 }
 
+type ValHelp struct {
+	Type string `json:"type"`
+	Vals string `json:"vals"`
+	Help string `json:"help"`
+}
+
 type ConfResp struct {
-	Name        string   `json:"name"`
-	State       string   `json:"state"`
-	Type        []string `json:"type"`
-	Enumeration []string `json:"enumeration"`
-	End         string   `json:"end"`
-	Mandatory   string   `json:"mandatory"`
-	Multi       string   `json:"multi"`
-	Default     string   `json:"default"`
-	Help        string   `json:"help"`
-	ValHelp     []string `json:"val_help"`
-	CompHelp    string   `json:"comp_help"`
-	Children    []*Child `json:"children"`
+	Name        string    `json:"name"`
+	State       string    `json:"state"`
+	Type        []string  `json:"type"`
+	Enumeration []string  `json:"enumeration"`
+	End         string    `json:"end"`
+	Mandatory   string    `json:"mandatory"`
+	Multi       string    `json:"multi"`
+	Default     string    `json:"default"`
+	Help        string    `json:"help"`
+	ValHelp     []ValHelp `json:"val_help"`
+	CompHelp    string    `json:"comp_help"`
+	Children    []*Child  `json:"children"`
 }
 
 type OpResp struct {
@@ -68,6 +132,7 @@ type OpResp struct {
 }
 
 type Process struct {
+	client   *Client
 	Username string `json:"username"`
 	Started  string `json:"started"`
 	Updated  string `json:"updated"`
@@ -75,20 +140,19 @@ type Process struct {
 	Command  string `json:"command"`
 }
 
-type Command struct {
-	pid    string
-	client *Client
+func (p *Process) getPath() string {
+	return "/rest/op/" + p.Id
 }
 
-func (c *Command) getOutput(w io.Writer) error {
-	res, err := c.client.doRequest("GET", "/rest/op/"+c.pid)
+func (p *Process) getOutput(w io.Writer) error {
+	res, err := p.client.doRequest("GET", p.getPath())
 	if err != nil {
 		return err
 	}
 	io.Copy(w, res.Body)
 	res.Body.Close()
 	for res.StatusCode != 410 {
-		res, err = c.client.doRequest("GET", "/rest/op/"+c.pid)
+		res, err = p.client.doRequest("GET", p.getPath())
 		if err != nil {
 			if res != nil && res.StatusCode == 410 {
 				break
@@ -108,26 +172,26 @@ func (c *Command) getOutput(w io.Writer) error {
 	return nil
 }
 
-func (c *Command) StreamOutput(w io.Writer) error {
-	return c.getOutput(w)
+func (p *Process) StreamOutput(w io.Writer) error {
+	return p.getOutput(w)
 }
 
-func (c *Command) Output() (string, error) {
+func (p *Process) Output() (string, error) {
 	buf := new(bytes.Buffer)
-	err := c.getOutput(buf)
+	err := p.getOutput(buf)
 	if err != nil {
 		return "", err
 	}
 	return buf.String(), nil
 }
 
-func (c *Command) Pid() string {
-	return c.pid
+func (p *Process) Pid() string {
+	return p.Id
 }
 
-func (c *Command) Kill() error {
+func (p *Process) Kill() error {
 	//TODO: should use MessageErrorResp
-	_, err := c.client.doRequest("DELETE", "/rest/op/"+c.pid)
+	_, err := p.client.doRequest("DELETE", p.getPath())
 	return err
 }
 
@@ -136,7 +200,6 @@ type Client struct {
 	host string
 	auth string
 	user string
-	sid  string
 }
 
 func pathToString(path []string) string {
@@ -210,18 +273,13 @@ func (c *Client) decodeInto(res *http.Response, v interface{}) error {
 	return nil
 }
 
-func (c *Client) SetupSession() (string, error) {
+func (c *Client) SetupSession() (*Session, error) {
 	res, err := c.doRequest("POST", "/rest/conf")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	sid := path.Base(res.Header.Get("Location"))
-	c.sid = sid
-	return sid, nil
-}
-
-func (c *Client) TeardownSession() error {
-	return c.TeardownSid(c.sid)
+	return c.GetSession(sid)
 }
 
 func (c *Client) SessionExists(sid string) (bool, error) {
@@ -237,18 +295,6 @@ func (c *Client) SessionExists(sid string) (bool, error) {
 	return false, nil
 }
 
-func (c *Client) ConnectSession(sid string) error {
-	exists, err := c.SessionExists(sid)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return errors.New("session does not exist")
-	}
-	c.sid = sid
-	return nil
-}
-
 func (c *Client) ListSessions() ([]*Session, error) {
 	var resp GetSessionResp
 	res, err := c.doRequest("GET", "/rest/conf")
@@ -259,7 +305,23 @@ func (c *Client) ListSessions() ([]*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, session := range resp.Sessions {
+		session.client = c
+	}
 	return resp.Sessions, nil
+}
+
+func (c *Client) GetSession(sid string) (*Session, error) {
+	sessions, err := c.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	for _, session := range sessions {
+		if session.Id == sid {
+			return session, nil
+		}
+	}
+	return nil, errors.New("session does not exist")
 }
 
 func (c *Client) TeardownAllSessions() error {
@@ -271,7 +333,7 @@ func (c *Client) TeardownAllSessions() error {
 		if c.user != session.Username {
 			continue
 		}
-		err := c.TeardownSid(session.Id)
+		err := session.Teardown()
 		if err != nil {
 			return err
 		}
@@ -279,62 +341,9 @@ func (c *Client) TeardownAllSessions() error {
 	return nil
 }
 
-func (c *Client) TeardownSid(sid string) error {
-	//TODO, this should use MessageErrorResp
-	_, err := c.doRequest("DELETE", "/rest/conf/"+sid)
-	return err
-}
-
-func (c *Client) Set(path []string) error {
-	_, err := c.doRequest("PUT", "/rest/conf/"+c.sid+"/set"+pathToString(path))
-	return err
-}
-
-func (c *Client) Delete(path []string) error {
-	_, err := c.doRequest("PUT", "/rest/conf/"+c.sid+"/delete"+pathToString(path))
-	return err
-}
-
-func (c *Client) Get(path []string) (*ConfResp, error) {
-	var resp *ConfResp
-	res, err := c.doRequest("GET", "/rest/conf/"+c.sid+pathToString(path))
-	if err != nil {
-		return nil, err
-	}
-	err = c.decodeInto(res, &resp)
-	if err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-func (c *Client) Commit() error {
-	_, err := c.doMsgRequest("POST", "/rest/conf/"+c.sid+"/commit")
-	return err
-}
-
-func (c *Client) Save() error {
-	_, err := c.doMsgRequest("POST", "/rest/conf/"+c.sid+"/save")
-	return err
-}
-
-func (c *Client) Load() error {
-	_, err := c.doMsgRequest("POST", "/rest/conf/"+c.sid+"/load")
-	return err
-}
-
-func (c *Client) Discard() error {
-	_, err := c.doMsgRequest("POST", "/rest/conf/"+c.sid+"/discard")
-	return err
-}
-
-func (c *Client) Show() (string, error) {
-	return c.doMsgRequest("POST", "/rest/conf/"+c.sid+"/show")
-}
-
 func (c *Client) GetOperational(path []string) (*OpResp, error) {
 	var resp *OpResp
-	res, err := c.doRequest("GET", "/rest/op/"+c.sid+pathToString(path))
+	res, err := c.doRequest("GET", "/rest/op/"+pathToString(path))
 	if err != nil {
 		return nil, err
 	}
@@ -345,15 +354,13 @@ func (c *Client) GetOperational(path []string) (*OpResp, error) {
 	return resp, nil
 }
 
-func (c *Client) StartOperationalCmd(p []string) (*Command, error) {
+func (c *Client) StartProcess(p []string) (*Process, error) {
 	res, err := c.doRequest("POST", "/rest/op"+pathToString(p))
 	if err != nil {
 		return nil, err
 	}
-	return &Command{
-		pid:    path.Base(res.Header.Get("Location")),
-		client: c,
-	}, nil
+	pid := path.Base(res.Header.Get("Location"))
+	return c.GetProcess(pid)
 }
 
 func (c *Client) ListProcesses() ([]*Process, error) {
@@ -366,14 +373,23 @@ func (c *Client) ListProcesses() ([]*Process, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, process := range resp.Processes {
+		process.client = c
+	}
 	return resp.Processes, nil
 }
 
-func (c *Client) ProcessToCommand(proc *Process) *Command {
-	return &Command{
-		pid:    proc.Id,
-		client: c,
+func (c *Client) GetProcess(pid string) (*Process, error) {
+	processes, err := c.ListProcesses()
+	if err != nil {
+		return nil, err
 	}
+	for _, process := range processes {
+		if process.Id == pid {
+			return process, nil
+		}
+	}
+	return nil, errors.New("process not found")
 }
 
 func (c *Client) KillProcesses() error {
@@ -385,8 +401,7 @@ func (c *Client) KillProcesses() error {
 		if c.user != proc.Username {
 			continue
 		}
-		cmd := c.ProcessToCommand(proc)
-		err := cmd.Kill()
+		err := proc.Kill()
 		if err != nil {
 			return err
 		}

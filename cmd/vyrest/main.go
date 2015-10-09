@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,9 +34,9 @@ func handleError(err error) {
 }
 
 func setupSession(c *vyrest.Client, args ...string) {
-	sid, err := c.SetupSession()
+	session, err := c.SetupSession()
 	handleError(err)
-	fmt.Println(sid)
+	fmt.Println(session.Id)
 }
 
 func listSessions(c *vyrest.Client, args ...string) {
@@ -51,11 +52,13 @@ func listSessions(c *vyrest.Client, args ...string) {
 }
 
 func teardownSession(c *vyrest.Client, args ...string) {
-	if sid == "" {
+	if len(args) == 0 {
 		handleError(errors.New("must supply sid to teardown"))
 	}
 	sid := args[0]
-	handleError(c.TeardownSid(sid))
+	session, err := c.GetSession(sid)
+	handleError(err)
+	handleError(session.Teardown())
 }
 
 func teardownSessions(c *vyrest.Client, args ...string) {
@@ -71,42 +74,46 @@ func sessionExists(c *vyrest.Client, args ...string) {
 	fmt.Println(exists)
 }
 
+func getSession(c *vyrest.Client) *vyrest.Session {
+	session, err := c.GetSession(sid)
+	handleError(err)
+	return session
+}
+
 func set(c *vyrest.Client, args ...string) {
-	handleError(c.Set(args))
+	handleError(getSession(c).Set(args))
 }
 
 func del(c *vyrest.Client, args ...string) {
-	handleError(c.Delete(args))
+	handleError(getSession(c).Delete(args))
 }
 
 func get(c *vyrest.Client, args ...string) {
-	resp, err := c.Get(args)
+	resp, err := getSession(c).Get(args)
 	handleError(err)
-	out := make([]string, 0, len(resp.Children))
-	for _, ch := range resp.Children {
-		out = append(out, ch.Name)
-	}
-	fmt.Println(out)
+	b, err := json.MarshalIndent(resp, "", "    ")
+	handleError(err)
+	fmt.Println(string(b))
 }
 
 func commit(c *vyrest.Client, args ...string) {
-	handleError(c.Commit())
+	handleError(getSession(c).Commit())
 }
 
 func save(c *vyrest.Client, args ...string) {
-	handleError(c.Save())
+	handleError(getSession(c).Save())
 }
 
 func load(c *vyrest.Client, args ...string) {
-	handleError(c.Load())
+	handleError(getSession(c).Load())
 }
 
 func discard(c *vyrest.Client, args ...string) {
-	handleError(c.Discard())
+	handleError(getSession(c).Discard())
 }
 
 func show(c *vyrest.Client, args ...string) {
-	out, err := c.Show()
+	out, err := getSession(c).Show()
 	handleError(err)
 	fmt.Println(out)
 }
@@ -118,13 +125,13 @@ func getOp(c *vyrest.Client, args ...string) {
 }
 
 func startCmd(c *vyrest.Client, args ...string) {
-	cmd, err := c.StartOperationalCmd(args)
+	cmd, err := c.StartProcess(args)
 	handleError(err)
 	fmt.Println(cmd.Pid())
 }
 
 func runCmd(c *vyrest.Client, args ...string) {
-	cmd, err := c.StartOperationalCmd(args)
+	cmd, err := c.StartProcess(args)
 	handleError(err)
 	err = cmd.StreamOutput(os.Stdout)
 	handleError(err)
@@ -132,38 +139,18 @@ func runCmd(c *vyrest.Client, args ...string) {
 
 func getOutput(c *vyrest.Client, args ...string) {
 	pid := args[0]
-	procs, err := c.ListProcesses()
+	proc, err := c.GetProcess(pid)
 	handleError(err)
-	var cmd *vyrest.Command
-	for _, proc := range procs {
-		if proc.Id == pid {
-			cmd = c.ProcessToCommand(proc)
-			break
-		}
-	}
-	if cmd == nil {
-		handleError(errors.New("unknown pid"))
-	}
-	out, err := cmd.Output()
+	out, err := proc.Output()
 	handleError(err)
 	fmt.Println(out)
 }
 
 func killProcess(c *vyrest.Client, args ...string) {
 	pid := args[0]
-	procs, err := c.ListProcesses()
+	proc, err := c.GetProcess(pid)
 	handleError(err)
-	var cmd *vyrest.Command
-	for _, proc := range procs {
-		if proc.Id == pid {
-			cmd = c.ProcessToCommand(proc)
-			break
-		}
-	}
-	if cmd == nil {
-		handleError(errors.New("unknown pid"))
-	}
-	handleError(cmd.Kill())
+	handleError(proc.Kill())
 }
 
 func killProcesses(c *vyrest.Client, args ...string) {
@@ -229,7 +216,6 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 	c := vyrest.Dial(host, user, pass)
-	c.ConnectSession(sid)
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Must supply command")
 		flag.Usage()
