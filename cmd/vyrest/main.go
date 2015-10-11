@@ -121,7 +121,9 @@ func show(c *vyrest.Client, args ...string) {
 func getOp(c *vyrest.Client, args ...string) {
 	resp, err := c.GetOperational(args)
 	handleError(err)
-	fmt.Println(resp.Children)
+	b, err := json.MarshalIndent(resp, "", "    ")
+	handleError(err)
+	fmt.Println(string(b))
 }
 
 func startCmd(c *vyrest.Client, args ...string) {
