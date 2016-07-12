@@ -7,13 +7,33 @@ import (
 	"fmt"
 	"github.com/jsouthworth/vyrest"
 	"os"
+	"os/signal"
 	"sort"
 	"text/tabwriter"
 )
 
 var host, user, pass, sid string
+var signalProcCh chan *vyrest.Process
 
+func signalHandler() {
+	c := make(chan os.Signal, 1)
+	var proc *vyrest.Process
+	signal.Notify(c, os.Interrupt)
+	for {
+		select {
+		case <-c:
+			if proc != nil {
+				proc.Kill()
+				proc = nil
+			}
+			os.Exit(2)
+		case proc = <-signalProcCh:
+		}
+	}
+}
 func init() {
+	signalProcCh = make(chan *vyrest.Process)
+	go signalHandler()
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [flags] <command> <args> \n", os.Args[0])
 		flag.PrintDefaults()
@@ -135,6 +155,7 @@ func startCmd(c *vyrest.Client, args ...string) {
 func runCmd(c *vyrest.Client, args ...string) {
 	cmd, err := c.StartProcess(args)
 	handleError(err)
+	signalProcCh <- cmd
 	err = cmd.StreamOutput(os.Stdout)
 	handleError(err)
 }
